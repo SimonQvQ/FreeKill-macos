@@ -1,46 +1,113 @@
-name: macOS Build
+name: Build macOS
 
 on:
+  workflow_dispatch:        # 手动触发
   push:
-    branches: [ "main", "master" ]
-  pull_request:
-    branches: [ "main", "master" ]
-  workflow_dispatch: # 允许你在 GitHub 页面上手动点击运行
+    tags:
+      - 'v*'               # 推送 tag 时自动触发
 
 jobs:
   build-macos:
     runs-on: macos-latest
 
     steps:
-    - name: Check out repository
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive # 如果项目有子模块，自动拉取
+      # 1. 检出代码（含子模块）
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
-    - name: Set up Homebrew
-      uses: Homebrew/actions/setup-homebrew@master
+      # 2. 缓存 Homebrew 依赖，加速后续构建
+      - name: Cache Homebrew packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /usr/local/Cellar
+          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/build-macos.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-brew-
 
-    - name: Install dependencies
-      run: |
-        brew install cmake libgit2 lua qt pkgconfig vulkan-headers swig
-        # 将 Qt 的路径加入环境变量，以便 cmake 能找到它
-        echo "CMAKE_PREFIX_PATH=$(brew --prefix qt)" >> $GITHUB_ENV
+      # 3. 安装依赖
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install cmake libgit2 lua qt pkgconfig vulkan-headers swig
 
-    - name: Configure CMake
-      run: |
-        mkdir build
-        cd build
-        cmake .. -DCMAKE_PREFIX_PATH=${{ env.CMAKE_PREFIX_PATH }}
+      # 4. 配置环境变量（让 CMake 能找到 Qt）
+      - name: Set Qt environment
+        run: |
+          QT_PATH=$(brew --prefix qt)
+          echo "Qt installed at: $QT_PATH"
+          echo "CMAKE_PREFIX_PATH=$QT_PATH" >> $GITHUB_ENV
+          echo "$QT_PATH/bin" >> $GITHUB_PATH
 
-    - name: Build
-      run: |
-        cd build
-        make -j$(sysctl -n hw.ncpu)
+      # 5. 编译
+      - name: Build
+        run: |
+          mkdir -p build
+          cd build
+          cmake .. \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_PREFIX_PATH=${{ env.CMAKE_PREFIX_PATH }}
+          make -j$(sysctl -n hw.logicalcpu)
 
-    - name: Upload Artifact
-      uses: actions/artifacts@v4
-      with:
-        name: FreeKill-macOS
-        path: |
-          build/FreeKill
-          # 如果编译生成了 .app 或其他打包文件，可以在下方继续添加路径
+      # 6. 打包为 .app + dmg（需要 Qt 的 macdeployqt 工具）
+      - name: Package app bundle
+        run: |
+          QT_BIN=$(brew --prefix qt)/bin
+
+          # 若 CMake 已经产出 .app，则直接用；否则手动包装
+          if [ -d "build/FreeKill.app" ]; then
+            APP_PATH="build/FreeKill.app"
+          else
+            # 创建最基本的 .app 结构
+            mkdir -p build/FreeKill.app/Contents/MacOS
+            cp build/FreeKill build/FreeKill.app/Contents/MacOS/FreeKill
+            cat > build/FreeKill.app/Contents/Info.plist << 'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>FreeKill</string>
+            <key>CFBundleIdentifier</key><string>com.qsgs-fans.freekill</string>
+            <key>CFBundleName</key><string>FreeKill</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          EOF
+            APP_PATH="build/FreeKill.app"
+          fi
+
+          # 用 macdeployqt 补全 Qt 框架
+          $QT_BIN/macdeployqt "$APP_PATH" -qmldir=. || true
+
+          # 将游戏资源复制进 .app（按项目结构调整路径）
+          for dir in Fk audio fonts image lang lua packages; do
+            [ -d "$dir" ] && cp -r "$dir" "$APP_PATH/Contents/MacOS/" || true
+          done
+
+          # 打包成 dmg（需要 create-dmg，可选）
+          brew install create-dmg || true
+          create-dmg \
+            --volname "FreeKill" \
+            --window-size 600 400 \
+            --app-drop-link 450 180 \
+            "FreeKill-macOS.dmg" \
+            "$APP_PATH" || \
+          # 降级方案：直接 zip
+          (cd build && zip -r ../FreeKill-macOS.zip FreeKill.app)
+
+      # 7. 上传产物到 Actions Artifacts
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FreeKill-macOS
+          # 优先上传 dmg，没有则上传 zip
+          path: |
+            FreeKill-macOS.dmg
+            FreeKill-macOS.zip
+          if-no-files-found: warn
+          retention-days: 30
