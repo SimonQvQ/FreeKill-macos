@@ -53,33 +53,47 @@ jobs:
         run: |
           QT_BIN=$(brew --prefix qt)/bin
 
-          if [ -d "build/FreeKill.app" ]; then
-            APP_PATH="build/FreeKill.app"
-          else
-            mkdir -p build/FreeKill.app/Contents/MacOS
-            cp build/FreeKill build/FreeKill.app/Contents/MacOS/FreeKill
-            cat > build/FreeKill.app/Contents/Info.plist << 'EOF'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-            "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleExecutable</key><string>FreeKill</string>
-            <key>CFBundleIdentifier</key><string>com.qsgs-fans.freekill</string>
-            <key>CFBundleName</key><string>FreeKill</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>NSHighResolutionCapable</key><true/>
-          </dict>
-          </plist>
-          EOF
-            APP_PATH="build/FreeKill.app"
-          fi
+          # 固定使用手动构建的 .app 结构，确保启动脚本正确
+          APP_PATH="build/FreeKill.app"
+          mkdir -p "$APP_PATH/Contents/MacOS"
+
+          # 真正的二进制重命名为 FreeKill.bin
+          cp build/FreeKill "$APP_PATH/Contents/MacOS/FreeKill.bin"
+
+          # 启动脚本：cd 到 Contents/MacOS 后再运行二进制
+          # FreeKill 用相对路径查找 lua/ packages/ 等资源，必须从正确目录启动
+          cat > "$APP_PATH/Contents/MacOS/FreeKill" << 'LAUNCHER'
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$DIR"
+exec "$DIR/FreeKill.bin" "$@"
+LAUNCHER
+          chmod +x "$APP_PATH/Contents/MacOS/FreeKill"
+
+          cat > "$APP_PATH/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>FreeKill</string>
+  <key>CFBundleIdentifier</key><string>com.qsgs-fans.freekill</string>
+  <key>CFBundleName</key><string>FreeKill</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>NSHighResolutionCapable</key><true/>
+</dict>
+</plist>
+PLIST
 
           $QT_BIN/macdeployqt "$APP_PATH" -qmldir=. || true
 
           for dir in Fk audio fonts image lang lua packages; do
             [ -d "$dir" ] && cp -r "$dir" "$APP_PATH/Contents/MacOS/" || true
           done
+
+          # ad-hoc 签名：不需要 Apple 开发者证书，让 macOS 能正常加载所有 dylib
+          # --force: 覆盖已有签名  --deep: 递归签名内部所有 dylib/framework  --sign -: ad-hoc
+          codesign --force --deep --sign - "$APP_PATH"
 
           brew install create-dmg || true
           create-dmg \
