@@ -16,9 +16,6 @@ jobs:
         with:
           submodules: recursive
 
-      # 安装依赖
-      # 重点：brew 默认的 lua 现在是 5.5，项目需要 5.4
-      # 用 brew link --force 把 5.4 覆盖到默认路径
       - name: Install dependencies
         run: |
           brew update
@@ -26,19 +23,13 @@ jobs:
           brew install cmake libgit2 lua@5.4 qt pkgconfig vulkan-headers swig
           brew link --force --overwrite lua@5.4
 
-      # cmake + make 在同一个 step，直接用 shell 变量，避免跨 step 传参失效
       - name: Build
         run: |
           LUA_PREFIX=$(brew --prefix lua@5.4)
           QT_PREFIX=$(brew --prefix qt)
-
-          # README 要求：把 lua5.4 头文件复制到项目 include/ 目录
           cp -r "$LUA_PREFIX/include/lua5.4/." include/
-
-          # 找到真实 .dylib 文件名
           LUA_LIB=$(ls "$LUA_PREFIX/lib/liblua"*.dylib | head -1)
           echo "=== Using Lua lib : $LUA_LIB ==="
-
           mkdir -p build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
@@ -48,63 +39,20 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-L$LUA_PREFIX/lib -llua5.4"
           make -j$(sysctl -n hw.logicalcpu)
 
-      # 打包 .app
       - name: Package
         run: |
           QT_BIN=$(brew --prefix qt)/bin
-
-          # 固定使用手动构建的 .app 结构，确保启动脚本正确
           APP_PATH="build/FreeKill.app"
           mkdir -p "$APP_PATH/Contents/MacOS"
 
-          # 真正的二进制重命名为 FreeKill.bin
           cp build/FreeKill "$APP_PATH/Contents/MacOS/FreeKill.bin"
 
-          # 编译一个 C 启动器替代 shell 脚本
-          # shell 脚本作为 CFBundleExecutable 会被 macOS 用 Terminal 打开
-          # 纯二进制启动器则能正常双击运行
-          cat > /tmp/launcher.c << 'CSRC'
-#include <unistd.h>
-#include <libgen.h>
-#include <string.h>
-#include <mach-o/dyld.h>
-
-int main(int argc, char *argv[]) {
-    char path[4096];
-    uint32_t size = sizeof(path);
-    if (_NSGetExecutablePath(path, &size) != 0) return 1;
-
-    // cd 到可执行文件所在目录（Contents/MacOS/）
-    char dir[4096];
-    strncpy(dir, path, sizeof(dir));
-    chdir(dirname(dir));
-
-    // 重新取一次 dirname（dirname 会修改参数）
-    strncpy(dir, path, sizeof(dir));
-    char real[4096];
-    snprintf(real, sizeof(real), "%s/FreeKill.bin", dirname(dir));
-
-    execv(real, argv);
-    return 1;
-}
-CSRC
+          # C 启动器：用 base64 写入，避免 YAML 特殊字符冲突
+          echo 'I2luY2x1ZGUgPHVuaXN0ZC5oPgojaW5jbHVkZSA8c3RyaW5nLmg+CiNpbmNsdWRlIDxtYWNoLW8vZHlsZC5oPgoKc3RhdGljIGNoYXIqIG15X2Rpcm5hbWUoY2hhciogcCkgewogICAgY2hhciogcyA9IHN0cnJjaHIocCwgJy8nKTsKICAgIGlmIChzKSB7ICpzID0gJ1wwJzsgcmV0dXJuIHA7IH0KICAgIHJldHVybiAoY2hhciopIi4iOwp9CgppbnQgbWFpbihpbnQgYXJnYywgY2hhciogYXJndltdKSB7CiAgICBjaGFyIHBhdGhbNDA5Nl07CiAgICB1aW50MzJfdCBzaXplID0gc2l6ZW9mKHBhdGgpOwogICAgaWYgKF9OU0dldEV4ZWN1dGFibGVQYXRoKHBhdGgsICZzaXplKSAhPSAwKSByZXR1cm4gMTsKICAgIGNoYXIgZGlyWzQwOTZdOwogICAgc3RybmNweShkaXIsIHBhdGgsIHNpemVvZihkaXIpKTsKICAgIGNoZGlyKG15X2Rpcm5hbWUoZGlyKSk7CiAgICBzdHJuY3B5KGRpciwgcGF0aCwgc2l6ZW9mKGRpcikpOwogICAgY2hhciByZWFsWzQwOTZdOwogICAgc25wcmludGYocmVhbCwgc2l6ZW9mKHJlYWwpLCAiJXMvRnJlZUtpbGwuYmluIiwgbXlfZGlybmFtZShkaXIpKTsKICAgIGV4ZWN2KHJlYWwsIGFyZ3YpOwogICAgcmV0dXJuIDE7Cn0K' | base64 --decode > /tmp/launcher.c
           clang -o "$APP_PATH/Contents/MacOS/FreeKill" /tmp/launcher.c
-          chmod +x "$APP_PATH/Contents/MacOS/FreeKill"
 
-          cat > "$APP_PATH/Contents/Info.plist" << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>CFBundleExecutable</key><string>FreeKill</string>
-  <key>CFBundleIdentifier</key><string>com.qsgs-fans.freekill</string>
-  <key>CFBundleName</key><string>FreeKill</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-  <key>NSHighResolutionCapable</key><true/>
-</dict>
-</plist>
-PLIST
+          # Info.plist
+          echo 'PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPCFET0NUWVBFIHBsaXN0IFBVQkxJQyAiLS8vQXBwbGUvL0RURCBQTElTVCAxLjAvL0VOIgogICJodHRwOi8vd3d3LmFwcGxlLmNvbS9EVERzL1Byb3BlcnR5TGlzdC0xLjAuZHRkIj4KPHBsaXN0IHZlcnNpb249IjEuMCI+CjxkaWN0PgogIDxrZXk+Q0ZCdW5kbGVFeGVjdXRhYmxlPC9rZXk+PHN0cmluZz5GcmVlS2lsbDwvc3RyaW5nPgogIDxrZXk+Q0ZCdW5kbGVJZGVudGlmaWVyPC9rZXk+PHN0cmluZz5jb20ucXNncy1mYW5zLmZyZWVraWxsPC9zdHJpbmc+CiAgPGtleT5DRkJ1bmRsZU5hbWU8L2tleT48c3RyaW5nPkZyZWVLaWxsPC9zdHJpbmc+CiAgPGtleT5DRkJ1bmRsZVBhY2thZ2VUeXBlPC9rZXk+PHN0cmluZz5BUFBMPC9zdHJpbmc+CiAgPGtleT5OU0hpZ2hSZXNvbHV0aW9uQ2FwYWJsZTwva2V5Pjx0cnVlLz4KPC9kaWN0Pgo8L3BsaXN0Pg==' | base64 --decode > "$APP_PATH/Contents/Info.plist"
 
           $QT_BIN/macdeployqt "$APP_PATH" -qmldir=. || true
 
@@ -112,8 +60,6 @@ PLIST
             [ -d "$dir" ] && cp -r "$dir" "$APP_PATH/Contents/MacOS/" || true
           done
 
-          # ad-hoc 签名：不需要 Apple 开发者证书，让 macOS 能正常加载所有 dylib
-          # --force: 覆盖已有签名  --deep: 递归签名内部所有 dylib/framework  --sign -: ad-hoc
           codesign --force --deep --sign - "$APP_PATH"
 
           brew install create-dmg || true
