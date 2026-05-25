@@ -1,79 +1,58 @@
 name: Build macOS
 
 on:
-  workflow_dispatch:        # 手动触发
+  workflow_dispatch:
   push:
     tags:
-      - 'v*'               # 推送 tag 时自动触发
+      - 'v*'
 
 jobs:
   build-macos:
     runs-on: macos-latest
 
     steps:
-      # 1. 检出代码（含子模块）
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      # 2. 缓存 Homebrew 依赖，加速后续构建
-      - name: Cache Homebrew packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/Library/Caches/Homebrew
-            /usr/local/Cellar
-          key: ${{ runner.os }}-brew-${{ hashFiles('.github/workflows/build-macos.yml') }}
-          restore-keys: |
-            ${{ runner.os }}-brew-
-
-      # 3. 安装依赖
-      # 注意：必须用 lua@5.4，brew 默认的 lua 现在是 5.5，与项目不兼容
+      # 安装依赖
+      # 重点：brew 默认的 lua 现在是 5.5，项目需要 5.4
+      # 用 brew link --force 把 5.4 覆盖到默认路径
       - name: Install dependencies
         run: |
           brew update
+          brew uninstall --ignore-dependencies lua 2>/dev/null || true
           brew install cmake libgit2 lua@5.4 qt pkgconfig vulkan-headers swig
+          brew link --force --overwrite lua@5.4
 
-      # 4. 配置环境变量（让 CMake 能找到 Qt 和 Lua 5.4）
-      - name: Set environment variables
-        run: |
-          QT_PATH=$(brew --prefix qt)
-          LUA_PREFIX=$(brew --prefix lua@5.4)
-
-          echo "Qt  : $QT_PATH"
-          echo "Lua : $LUA_PREFIX"
-
-          # Qt
-          echo "CMAKE_PREFIX_PATH=$QT_PATH" >> $GITHUB_ENV
-          echo "$QT_PATH/bin" >> $GITHUB_PATH
-
-          # Lua 5.4 — 明确路径，防止 CMake 误选 5.5
-          echo "LUA_INCLUDE_DIR=$LUA_PREFIX/include/lua5.4" >> $GITHUB_ENV
-          echo "LUA_LIBRARY=$LUA_PREFIX/lib/liblua5.4.dylib"  >> $GITHUB_ENV
-
-      # 5. 编译
+      # cmake + make 在同一个 step，直接用 shell 变量，避免跨 step 传参失效
       - name: Build
         run: |
-          mkdir -p build
-          cd build
+          LUA_PREFIX=$(brew --prefix lua@5.4)
+          QT_PREFIX=$(brew --prefix qt)
+
+          echo "=== Lua prefix : $LUA_PREFIX ==="
+          echo "=== Qt  prefix : $QT_PREFIX ==="
+          ls "$LUA_PREFIX/lib/" | grep lua
+          ls "$LUA_PREFIX/include/"
+
+          mkdir -p build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}" \
-            -DLUA_INCLUDE_DIR="${{ env.LUA_INCLUDE_DIR }}" \
-            -DLUA_LIBRARY="${{ env.LUA_LIBRARY }}"
+            -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
+            -DLUA_INCLUDE_DIR="$LUA_PREFIX/include/lua5.4" \
+            -DLUA_LIBRARY="$LUA_PREFIX/lib/liblua5.4.dylib"
           make -j$(sysctl -n hw.logicalcpu)
 
-      # 6. 打包为 .app + dmg（需要 Qt 的 macdeployqt 工具）
-      - name: Package app bundle
+      # 打包 .app
+      - name: Package
         run: |
           QT_BIN=$(brew --prefix qt)/bin
 
-          # 若 CMake 已经产出 .app，则直接用；否则手动包装
           if [ -d "build/FreeKill.app" ]; then
             APP_PATH="build/FreeKill.app"
           else
-            # 创建最基本的 .app 结构
             mkdir -p build/FreeKill.app/Contents/MacOS
             cp build/FreeKill build/FreeKill.app/Contents/MacOS/FreeKill
             cat > build/FreeKill.app/Contents/Info.plist << 'EOF'
@@ -93,15 +72,12 @@ jobs:
             APP_PATH="build/FreeKill.app"
           fi
 
-          # 用 macdeployqt 补全 Qt 框架
           $QT_BIN/macdeployqt "$APP_PATH" -qmldir=. || true
 
-          # 将游戏资源复制进 .app（按项目结构调整路径）
           for dir in Fk audio fonts image lang lua packages; do
             [ -d "$dir" ] && cp -r "$dir" "$APP_PATH/Contents/MacOS/" || true
           done
 
-          # 打包成 dmg（需要 create-dmg，可选）
           brew install create-dmg || true
           create-dmg \
             --volname "FreeKill" \
@@ -109,15 +85,12 @@ jobs:
             --app-drop-link 450 180 \
             "FreeKill-macOS.dmg" \
             "$APP_PATH" || \
-          # 降级方案：直接 zip
           (cd build && zip -r ../FreeKill-macOS.zip FreeKill.app)
 
-      # 7. 上传产物到 Actions Artifacts
-      - name: Upload DMG artifact
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: FreeKill-macOS
-          # 优先上传 dmg，没有则上传 zip
           path: |
             FreeKill-macOS.dmg
             FreeKill-macOS.zip
