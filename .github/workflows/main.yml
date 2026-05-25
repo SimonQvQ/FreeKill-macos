@@ -29,18 +29,28 @@ jobs:
             ${{ runner.os }}-brew-
 
       # 3. 安装依赖
+      # 注意：必须用 lua@5.4，brew 默认的 lua 现在是 5.5，与项目不兼容
       - name: Install dependencies
         run: |
           brew update
-          brew install cmake libgit2 lua qt pkgconfig vulkan-headers swig
+          brew install cmake libgit2 lua@5.4 qt pkgconfig vulkan-headers swig
 
-      # 4. 配置环境变量（让 CMake 能找到 Qt）
-      - name: Set Qt environment
+      # 4. 配置环境变量（让 CMake 能找到 Qt 和 Lua 5.4）
+      - name: Set environment variables
         run: |
           QT_PATH=$(brew --prefix qt)
-          echo "Qt installed at: $QT_PATH"
+          LUA_PREFIX=$(brew --prefix lua@5.4)
+
+          echo "Qt  : $QT_PATH"
+          echo "Lua : $LUA_PREFIX"
+
+          # Qt
           echo "CMAKE_PREFIX_PATH=$QT_PATH" >> $GITHUB_ENV
           echo "$QT_PATH/bin" >> $GITHUB_PATH
+
+          # Lua 5.4 — 明确路径，防止 CMake 误选 5.5
+          echo "LUA_INCLUDE_DIR=$LUA_PREFIX/include/lua5.4" >> $GITHUB_ENV
+          echo "LUA_LIBRARY=$LUA_PREFIX/lib/liblua5.4.dylib"  >> $GITHUB_ENV
 
       # 5. 编译
       - name: Build
@@ -49,7 +59,9 @@ jobs:
           cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_PREFIX_PATH=${{ env.CMAKE_PREFIX_PATH }}
+            -DCMAKE_PREFIX_PATH="${{ env.CMAKE_PREFIX_PATH }}" \
+            -DLUA_INCLUDE_DIR="${{ env.LUA_INCLUDE_DIR }}" \
+            -DLUA_LIBRARY="${{ env.LUA_LIBRARY }}"
           make -j$(sysctl -n hw.logicalcpu)
 
       # 6. 打包为 .app + dmg（需要 Qt 的 macdeployqt 工具）
