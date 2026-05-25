@@ -32,17 +32,20 @@ jobs:
           LUA_PREFIX=$(brew --prefix lua@5.4)
           QT_PREFIX=$(brew --prefix qt)
 
-          echo "=== Lua prefix : $LUA_PREFIX ==="
-          echo "=== Qt  prefix : $QT_PREFIX ==="
-          ls "$LUA_PREFIX/lib/" | grep lua
-          ls "$LUA_PREFIX/include/"
+          # README 要求：把 lua5.4 头文件复制到项目 include/ 目录
+          cp -r "$LUA_PREFIX/include/lua5.4/." include/
+
+          # 找到真实 .dylib 文件名
+          LUA_LIB=$(ls "$LUA_PREFIX/lib/liblua"*.dylib | head -1)
+          echo "=== Using Lua lib : $LUA_LIB ==="
 
           mkdir -p build && cd build
           cmake .. \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_PREFIX_PATH="$QT_PREFIX" \
-            -DLUA_INCLUDE_DIR="$LUA_PREFIX/include/lua5.4" \
-            -DLUA_LIBRARY="$LUA_PREFIX/lib/liblua5.4.dylib"
+            -DLUA_INCLUDE_DIR="$(pwd)/../include" \
+            -DLUA_LIBRARY="$LUA_LIB" \
+            -DCMAKE_EXE_LINKER_FLAGS="-L$LUA_PREFIX/lib -llua5.4"
           make -j$(sysctl -n hw.logicalcpu)
 
       # 打包 .app
