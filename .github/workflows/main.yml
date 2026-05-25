@@ -60,14 +60,35 @@ jobs:
           # 真正的二进制重命名为 FreeKill.bin
           cp build/FreeKill "$APP_PATH/Contents/MacOS/FreeKill.bin"
 
-          # 启动脚本：cd 到 Contents/MacOS 后再运行二进制
-          # FreeKill 用相对路径查找 lua/ packages/ 等资源，必须从正确目录启动
-          cat > "$APP_PATH/Contents/MacOS/FreeKill" << 'LAUNCHER'
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-cd "$DIR"
-exec "$DIR/FreeKill.bin" "$@"
-LAUNCHER
+          # 编译一个 C 启动器替代 shell 脚本
+          # shell 脚本作为 CFBundleExecutable 会被 macOS 用 Terminal 打开
+          # 纯二进制启动器则能正常双击运行
+          cat > /tmp/launcher.c << 'CSRC'
+#include <unistd.h>
+#include <libgen.h>
+#include <string.h>
+#include <mach-o/dyld.h>
+
+int main(int argc, char *argv[]) {
+    char path[4096];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) != 0) return 1;
+
+    // cd 到可执行文件所在目录（Contents/MacOS/）
+    char dir[4096];
+    strncpy(dir, path, sizeof(dir));
+    chdir(dirname(dir));
+
+    // 重新取一次 dirname（dirname 会修改参数）
+    strncpy(dir, path, sizeof(dir));
+    char real[4096];
+    snprintf(real, sizeof(real), "%s/FreeKill.bin", dirname(dir));
+
+    execv(real, argv);
+    return 1;
+}
+CSRC
+          clang -o "$APP_PATH/Contents/MacOS/FreeKill" /tmp/launcher.c
           chmod +x "$APP_PATH/Contents/MacOS/FreeKill"
 
           cat > "$APP_PATH/Contents/Info.plist" << 'PLIST'
